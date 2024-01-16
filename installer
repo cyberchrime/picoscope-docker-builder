@@ -41,10 +41,6 @@ function setup_opensuse {
 	rm /bin/udevadm
 }
 
-if (( UID )); then
-	exec sudo -- "$0" "$@"
-fi
-
 trap 'echo "FAILED on $LINENO"' ERR
 
 case "$ID_LIKE" in

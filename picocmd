@@ -6,7 +6,7 @@ trap 'echo "FAILED"' ERR
 
 declare base_name
 declare base_image
-declare repo="markkc/picoscope"
+declare repo="markk/picoscope"
 declare -a images=()
 
 declare self="$(realpath "$0")"
@@ -15,7 +15,7 @@ declare self_path="$(realpath "$(dirname "${self}")")"
 function get_base {
 	base_name="${1:-ubuntu}"
 	case "$base_name" in
-	ubuntu) base_image='ubuntu:20.04';;
+	ubuntu) base_image='ubuntu:22.04';;
 	opensuse) base_image='opensuse/leap:15.3';;
 	*) echo >&2 "Invalid base (supported: ubuntu opensuse)";;
 	esac
@@ -29,9 +29,9 @@ function build {
 	timestamp="$(date -u +%Y%m%d)"
 	local builder="pico-build-$base_name-$timestamp"
 
-	docker rmi -f "$repo:$base_name" &>/dev/null || true
-	docker rmi -f "$repo:$base_name-$timestamp" &>/dev/null || true
-	docker rm -f "$builder" &>/dev/null || true
+	podman rmi -f "$repo:$base_name" &>/dev/null || true
+	podman rmi -f "$repo:$base_name-$timestamp" &>/dev/null || true
+	podman rm -f "$builder" &>/dev/null || true
 
 	#
 	# Pico packages do a lot of stuff that causes issues with docker e.g. trying
@@ -40,7 +40,7 @@ function build {
 	# So we can't just use docker-build to build the images, we need to do things
 	# a bit more intrusively.
 	#
-	docker run \
+	podman run \
 		--init \
 		--name "$builder" \
 		--privileged \
@@ -50,11 +50,11 @@ function build {
 		--tmpfs /run \
 		"$base_image" \
 		bash -ex /installer
-	docker cp "$self_path/bootstrapper" "$builder":/
-	docker commit --change 'entrypoint ["/bin/bash", "/bootstrapper"]' "$builder" "$repo:$base_name-$timestamp"
-	docker rm "$builder"
+	podman cp "$self_path/bootstrapper" "$builder":/
+	podman commit --change='ENTRYPOINT ["/bin/bash", "/bootstrapper"]' "$builder" "$repo:$base_name-$timestamp"
+	podman rm "$builder"
 
-	docker tag "$repo:$base_name-$timestamp" "$repo:$base_name"
+	podman tag "$repo:$base_name-$timestamp" "$repo:$base_name"
 	images+=(
 		"$repo:$base_name-$timestamp"
 		"$repo:$base_name"
@@ -70,37 +70,42 @@ function run {
 		pico_gid=""
 	fi
 
-	docker run \
+	podman run \
 		--init \
 		--interactive \
 		--tty \
 		--privileged \
 		--ipc host \
 		--network host \
-		--env uid="$(id -u)" \
-		--env gid="$(id -g)" \
 		--env uname="$(id -un)" \
 		--env gname="$(id -gn)" \
 		--env home="$HOME" \
 		--env pico_gid="$pico_gid" \
 		--env hostname="$(hostname)" \
 		--env verbose="${verbose:-0}" \
-		--volume "$HOME:$HOME:rw" \
+		--env WAYLAND_DISPLAY=$WAYLAND_DISPLAY \
+		--volume "$HOME:/root:rw" \
 		--volume "$self_path/bootstrapper:/bootstrapper:ro" \
+		--volume "$self_path/installer:/installer:ro" \
 		--volume "/tmp/.X11-unix:/tmp/.X11-unix:rw" \
-		--volume "$HOME/.Xauthority:$HOME/.Xauthority:rw" \
-		--volume "$XDG_RUNTIME_DIR:$XDG_RUNTIME_DIR:rw" \
+		--volume "$XAUTHORITY:/root/.Xauthority:rw" \
+		--volume "$XDG_RUNTIME_DIR/$WAYLAND_DISPLAY":/tmp/wayland-0 \
+		--volume "/dev/bus/usb:/dev/bus/usb:rw" \
+		--group-add keep-groups \
 		--tmpfs /tmp \
 		--tmpfs /run \
 		--env DISPLAY \
 		--env XDG_RUNTIME_DIR \
+		--env GDK_BACKEND=x11 \
+		--env GDK_SCALE=1 \
+		--entrypoint '["/bin/bash"]' \
 		"$repo:$base_name" \
-		"$@"
+		/bootstrapper
 }
 
 function push {
 	for image in "${images[@]}"; do
-		docker push "$image"
+		podman push "$image"
 	done
 }
 
@@ -124,7 +129,7 @@ function picocmd_setup {
 	fi
 	if ! getent group picoscope &>/dev/null; then
 		groupadd picoscope
-		gpasswd -a "$(id -un)" picoscope
+		gpasswd -a $(id -un $SUDO_UID) picoscope
 		echo "You will need to log out and back in again, before then replugging devices"
 	fi
 	echo 'SUBSYSTEM=="usb", ATTRS{idVendor}=="0ce9", GROUP="picoscope", MODE="660"' > /etc/udev/rules.d/95-picoscope.rules
@@ -146,7 +151,7 @@ function picocmd_help {
 		" - build_and_push [<distro>] : build and push images based on chosen distro" \
 		"" \
 		"Distros:" \
-		" - ubuntu         : Ubuntu 20.04 (default)" \
+		" - ubuntu         : Ubuntu 22.04 (default)" \
 		" - opensuse       : OpenSUSE 15.3" \
 		""
 	exit 0
